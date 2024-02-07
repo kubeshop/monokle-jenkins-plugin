@@ -130,9 +130,10 @@ public class MonokleCLI {
     private void peformSetup() throws Exception {
         setDefaults();
 
-        Boolean isCloudMode = (organization != null || environment != null || apiToken != null) ? true : false;
+        // Boolean isCloudMode = (organization != null || environment != null ||
+        // apiToken != null) ? true : false;
 
-        checkEnvironmentVariables();
+        // checkEnvironmentVariables();
 
         String binaryPath = findWritableBinaryPath();
         MonokleLogger.println("Binary path: " + binaryPath);
@@ -140,7 +141,7 @@ public class MonokleCLI {
         String architecture = MonokleDetectors.detectArchitecture();
         String system = MonokleDetectors.detectSystem();
 
-        MonokleDetectors.detectKubectl(isCloudMode);
+        // MonokleDetectors.detectKubectl(isCloudMode);
 
         var installedMonokleVersion = MonokleDetectors.detectMonokleCLI(channel, version);
         Boolean isInstalled = installedMonokleVersion != null && !installedMonokleVersion.isEmpty();
@@ -161,7 +162,7 @@ public class MonokleCLI {
             installCLI(envVars, versionToInstall, system, architecture, binaryPath);
         }
 
-        configureContext(isCloudMode);
+        // configureContext(isCloudMode);
     }
 
     private static String findWritableBinaryPath() throws Exception {
@@ -187,25 +188,53 @@ public class MonokleCLI {
                 .orElseGet(() -> writablePaths.isEmpty() ? null : writablePaths.get(0));
     }
 
+    private static Artifact makeArtifact(String version, String system, String architecture) {
+        var encodedVersion = URLEncoder.encode(version, StandardCharsets.UTF_8);
+        if (system == "Darwin") {
+            if (system == "amd64") {
+                return new Artifact(
+                        String.format(
+                                "https://github.com/kubeshop/monokle-cli/releases/download/v%s/monokle-cli-macos-amd64",
+                                encodedVersion),
+                        "");
+            }
+            return new Artifact(
+                    String.format(
+                            "https://github.com/kubeshop/monokle-cli/releases/download/v%s/monokle-cli-macos-arm",
+                            encodedVersion),
+                    "");
+
+        }
+        if (system == "Linux") {
+            return new Artifact(
+                    String.format(
+                            "https://github.com/kubeshop/monokle-cli/releases/download/v%s/monokle-cli-linux",
+                            encodedVersion),
+                    "");
+        }
+        if (system == "Windows") {
+            return new Artifact(
+                    String.format(
+                            "https://github.com/kubeshop/monokle-cli/releases/download/v%s/monokle-cli-win.exe",
+                            encodedVersion),
+                    ".exe");
+        }
+        return null;
+    }
+
     private static void installCLI(
             EnvVars envVars, String version, String system, String architecture, String binaryDirPath)
             throws Exception {
 
-        // TODO: fix the URL for the correct binary
-        String artifactUrl = String.format(
-                "https://github.com/kubeshop/monokle-cli/releases/download/v%s/monokle_%s_%s_%s.tar.gz",
-                URLEncoder.encode(version, StandardCharsets.UTF_8),
-                URLEncoder.encode(version, StandardCharsets.UTF_8),
-                URLEncoder.encode(system, StandardCharsets.UTF_8),
-                URLEncoder.encode(architecture, StandardCharsets.UTF_8));
+        Artifact artifact = makeArtifact(version, system, architecture);
 
-        MonokleLogger.println("Downloading the artifact from \"" + artifactUrl + "\"...");
+        MonokleLogger.println("Downloading the artifact from \"" + artifact.getUrl() + "\"...");
 
         // Download the tar.gz file
         HttpClient client = HttpClient.newBuilder()
                 .followRedirects(HttpClient.Redirect.NORMAL)
                 .build();
-        HttpRequest request = HttpRequest.newBuilder().uri(URI.create(artifactUrl)).build();
+        HttpRequest request = HttpRequest.newBuilder().uri(URI.create(artifact.getUrl())).build();
 
         HttpResponse<InputStream> response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());
 
@@ -214,56 +243,13 @@ public class MonokleCLI {
             throw new IOException("Failed to download the Monokle CLI. HTTP status: " + response.statusCode());
         }
 
-        // Save the downloaded file to a temporary file
-        Path tempArchivePath = Paths.get(binaryDirPath, "tempMonokleArchive.tar.gz");
-        Files.copy(response.body(), tempArchivePath, StandardCopyOption.REPLACE_EXISTING);
+        Path monoklePath = Paths.get(binaryDirPath, "monokle" + artifact.getExtension());
+        Files.copy(response.body(), monoklePath, StandardCopyOption.REPLACE_EXISTING);
 
-        // TODO: revisit the name of the executable
-        Path outputPath = Paths.get(binaryDirPath, "monokle");
-
-        // Remove outputPath if it already exists
-        try {
-            Files.deleteIfExists(outputPath);
-            Files.deleteIfExists(Paths.get(binaryDirPath, "monokle"));
-        } catch (Exception e) {
-            throw new IOException("Failed to delete the existing Monokle CLI.", e);
-        }
-
-        // Extract the tar.gz file
-        try (TarArchiveInputStream tarInput = new TarArchiveInputStream(new GzipCompressorInputStream(
-                new BufferedInputStream(new FileInputStream(tempArchivePath.toFile()))))) {
-            Files.createDirectories(Paths.get(binaryDirPath));
-            TarArchiveEntry entry;
-            while ((entry = (TarArchiveEntry) tarInput.getNextTarEntry()) != null) {
-                // Create a path for the entry
-                Path entryPath = Paths.get(binaryDirPath, entry.getName());
-
-                if (entry.isDirectory()) {
-                    Files.createDirectories(entryPath);
-                } else {
-                    Path parentDir = entryPath.getParent();
-                    if (parentDir != null) {
-                        Files.createDirectories(parentDir);
-                    }
-                    Files.copy(tarInput, entryPath, StandardCopyOption.REPLACE_EXISTING);
-                }
-            }
-
-            if ("Darwin".equals(system) || "Linux".equals(system)) {
-                Set<PosixFilePermission> perms = PosixFilePermissions.fromString("rwxr--r--");
-                Files.setPosixFilePermissions(outputPath, perms);
-                MonokleLogger.println("Set execute permissions for " + outputPath);
-            }
-
-            // TODO: is this needed?
-            Files.createSymbolicLink(Paths.get(binaryDirPath, "monokle"), outputPath);
-            MonokleLogger.println("Linked CLI as " + Paths.get(binaryDirPath, "monokle"));
-
-        } catch (IOException e) {
-            throw new IOException("Failed to download or extract the artifact.", e);
-        } finally {
-            // Clean up: Delete the temporary file
-            Files.deleteIfExists(tempArchivePath);
+        if ("Darwin".equals(system) || "Linux".equals(system)) {
+            Set<PosixFilePermission> perms = PosixFilePermissions.fromString("rwxr--r--");
+            Files.setPosixFilePermissions(monoklePath, perms);
+            MonokleLogger.println("Set execute permissions for " + monoklePath);
         }
     }
 

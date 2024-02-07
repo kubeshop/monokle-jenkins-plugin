@@ -127,11 +127,9 @@ public class MonokleDetectors {
         switch (osArch) {
             case "x86_64":
             case "amd64":
-                return "x86_64";
+                return "amd64";
             case "aarch64":
                 return "arm64";
-            case "i386":
-                return "i386";
             default:
                 throw new Exception("We do not support this architecture yet.");
         }
